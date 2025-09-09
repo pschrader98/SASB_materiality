@@ -11,7 +11,7 @@ library(staggered)
 data_daily <- read.csv("E:/GermanBusinessPanelTeam/Schrader/Forschung/ESGmateriality/Data/panel_bid_ask_disclosure.csv")
 
 # Select main regression variables to make working with data more manageable
-data_daily = data_daily %>% dplyr::select(cusip8, evtdate, YearQuarter, material_flag , severity, reach, novelty, SICS.Codified.Industry, event,
+data_daily = data_daily %>% dplyr::select(cusip8, evtdate, rel_day, YearQuarter, material_flag , severity, reach, novelty, SICS.Codified.Industry, event,
                                           post_provisional_standard, spread, log_spread, spread_winsorized, spread_cs, log_spread_cs, spread_cs_winsorized,
                                           roa_abs_p1p99, NonMaterial_manual_earnings_overall_share,
                                           Material_manual_earnings_overall_share,
@@ -33,6 +33,83 @@ cols_check <- setdiff(names(data_daily),
                       c("spread_cs", "log_spread_cs", "spread_cs_winsorized"))
 
 data_spread <- data_daily %>% drop_na(all_of(cols_check))
+
+#---------------- Plot Distribution -------------------
+
+
+window_min <- -10
+window_max <-  2
+
+plot_df <- data_spread %>%
+  filter(rel_day >= window_min, rel_day <= window_max) %>%
+  group_by(rel_day) %>%
+  summarize(
+    avg_spread = mean(spread_winsorized, na.rm = TRUE),
+    n = sum(!is.na(spread_winsorized)),
+    .groups = "drop"
+  )
+
+# Create the directory if needed
+dir.create("Plots", showWarnings = FALSE, recursive = TRUE)
+
+# Build the plot and assign to `p`
+p <- ggplot(plot_df, aes(x = rel_day, y = avg_spread)) +
+  geom_line() +
+  geom_point() +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  scale_x_continuous(breaks = seq(window_min, window_max, by = 1),
+                     limits = c(window_min, window_max)) +
+  labs(
+    title = "Average Winsorized Spread Around Event (Window: -10 to +2)",
+    x = "Relative day to event (rel_day)",
+    y = "Average spread_winsorized"
+  ) +
+  theme_minimal(base_size = 13)
+
+# Save as PDF (with embedded fonts via cairo); fall back to "pdf" if cairo not available
+ggplot2::ggsave(
+  filename = "Plots/spread_plot.pdf",
+  plot     = p,
+  device   = grDevices::cairo_pdf,  # or device = "pdf"
+  width    = 8, height = 5, units = "in"
+)
+
+
+
+plot_df <- data_spread %>%
+  filter(rel_day >= window_min, rel_day <= window_max) %>%
+  mutate(
+    period = ifelse(post_provisional_standard == 1, "Post", "Pre")
+  ) %>%
+  group_by(rel_day, period) %>%
+  summarize(
+    avg_spread = mean(spread_winsorized, na.rm = TRUE),
+    n = sum(!is.na(spread_winsorized)),
+    .groups = "drop"
+  )
+
+p <- ggplot(plot_df, aes(x = rel_day, y = avg_spread,
+                         color = period, linetype = period)) +
+  geom_line(linewidth = 1) +
+  geom_point() +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  scale_x_continuous(breaks = seq(window_min, window_max, by = 1),
+                     limits = c(window_min, window_max)) +
+  labs(
+    title = "Average Winsorized Spread Around Event (Pre vs Post)",
+    x = "Relative day to event (rel_day)",
+    y = "Average spread_winsorized",
+    color = "Period", linetype = "Period"
+  ) +
+  theme_minimal(base_size = 13)
+
+ggplot2::ggsave(
+  filename = "Plots/spread_plot_post.pdf",
+  plot     = p,
+  device   = grDevices::cairo_pdf,  # or device = "pdf"
+  width    = 8, height = 5, units = "in"
+)
+
 
 
 
