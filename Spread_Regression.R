@@ -11,28 +11,41 @@ library(staggered)
 data_daily <- read.csv("E:/GermanBusinessPanelTeam/Schrader/Forschung/ESGmateriality/Data/panel_bid_ask_disclosure.csv")
 
 # Select main regression variables to make working with data more manageable
-data_daily = data_daily %>% dplyr::select(cusip8, evtdate, rel_day, YearQuarter, material_flag , severity, reach, novelty, SICS.Codified.Industry, event,
-                                          post_provisional_standard, spread, log_spread, spread_winsorized, spread_cs, log_spread_cs, spread_cs_winsorized,
-                                          roa_abs_p1p99, NonMaterial_manual_earnings_overall_share,
-                                          Material_manual_earnings_overall_share,
-                                          earnings_vol_20q, leverage_p1p99)
+data_daily = data_daily %>% dplyr::select(gvkey, YearQuarter, SICS.Codified.Industry, overall_material_disclosure = overall_manual_Material_words,
+                                          quarters_from_adoption, post_provisional_standard, Material_manual_earnings_overall_share, 
+                                          leverage_p1p99, roa_abs_p1p99, mtb_prevq_p1p99, size_ln_mve_prevq,
+                                          car_1_material, car_5_material, car_30_material, reach_material, event,
+                                          spread, log_spread, spread_winsorized, spread_cs, log_spread_cs, spread_cs_winsorized, rel_day
+                                         )
 
+wins <- function(x, p = 0.01) {
+  qs <- stats::quantile(x, c(p, 1 - p), na.rm = TRUE, names = FALSE)
+  pmin(pmax(x, qs[1]), qs[2])
+}
+
+# Use the new name in winsorization + factors
 data_daily <- data_daily %>%
-  mutate(
-    cusip = as.factor(cusip8),
-    YearQuarter = as.factor(YearQuarter)
+  dplyr::mutate(
+    overall_material_disclosure            = wins(overall_material_disclosure, 0.01),
+    Material_manual_earnings_overall_share = wins(Material_manual_earnings_overall_share, 0.01),
+    cusip      = as.factor(gvkey),
+    YearQuarter= as.factor(YearQuarter),
+    Industry   = as.factor(SICS.Codified.Industry)
+  ) %>%
+  # add log1p versions (consistent naming)
+  dplyr::mutate(
+    overall_material_disclosure_log1p            = log1p(overall_material_disclosure)
+    
   )
 
+data_post2010 <- data_daily %>%
+  dplyr::mutate(
+    .year_tmp = suppressWarnings(as.integer(substr(as.character(YearQuarter), 1, 4)))
+  ) %>%
+  dplyr::filter(.year_tmp > 2009) %>%
+  dplyr::select(-.year_tmp) %>%
+  droplevels()
 
-data_cs <- data_daily %>% drop_na()
-
-# 2) Drop rows with NA in all columns EXCEPT these three (more missings for cs values, so we want to keep these observations because we dont use them in spread regression):
-#    spread_cs, log_spread_cs, spread_cs_winsorized
-
-cols_check <- setdiff(names(data_daily),
-                      c("spread_cs", "log_spread_cs", "spread_cs_winsorized"))
-
-data_spread <- data_daily %>% drop_na(all_of(cols_check))
 
 #---------------- Plot Distribution -------------------
 
@@ -40,73 +53,56 @@ data_spread <- data_daily %>% drop_na(all_of(cols_check))
 window_min <- -10
 window_max <-  2
 
-plot_df <- data_spread %>%
-  filter(rel_day >= window_min, rel_day <= window_max) %>%
-  group_by(rel_day) %>%
-  summarize(
-    avg_spread = mean(spread_winsorized, na.rm = TRUE),
-    n = sum(!is.na(spread_winsorized)),
-    .groups = "drop"
-  )
+# 1) Build event ids so negatives are attached to the upcoming zero
+ds <- data_post2010 %>%
+  arrange(gvkey, rel_day) %>%
+  group_by(gvkey) %>%
+  mutate(event_id = cumsum(rel_day == 0) + as.integer(rel_day < 0)) %>%  # <-- key fix
+  ungroup()
 
-# Create the directory if needed
-dir.create("Plots", showWarnings = FALSE, recursive = TRUE)
-
-# Build the plot and assign to `p`
-p <- ggplot(plot_df, aes(x = rel_day, y = avg_spread)) +
-  geom_line() +
-  geom_point() +
-  geom_vline(xintercept = 0, linetype = "dashed") +
-  scale_x_continuous(breaks = seq(window_min, window_max, by = 1),
-                     limits = c(window_min, window_max)) +
-  labs(
-    title = "Average Winsorized Spread Around Event (Window: -10 to +2)",
-    x = "Relative day to event (rel_day)",
-    y = "Average spread_winsorized"
-  ) +
-  theme_minimal(base_size = 13)
-
-# Save as PDF (with embedded fonts via cairo); fall back to "pdf" if cairo not available
-ggplot2::ggsave(
-  filename = "Plots/spread_plot.pdf",
-  plot     = p,
-  device   = grDevices::cairo_pdf,  # or device = "pdf"
-  width    = 8, height = 5, units = "in"
-)
-
-
-
-plot_df <- data_spread %>%
-  filter(rel_day >= window_min, rel_day <= window_max) %>%
+# 2) Keep only windows that truly are CAR(5) incidents (at the anchor day)
+ds_events <- ds %>%
+  group_by(gvkey, event_id) %>%
   mutate(
-    period = ifelse(post_provisional_standard == 1, "Post", "Pre")
+    is_car5_incident = any(rel_day == 0 & car_5_material > 0, na.rm = TRUE),
+    event_post_flag  = dplyr::first(post_provisional_standard[rel_day == 0]),
+    period           = ifelse(event_post_flag == 1, "Post adoption", "Pre adoption")
   ) %>%
+  ungroup() %>%
+  filter(is_car5_incident, between(rel_day, window_min, window_max))
+
+# 3) Aggregate and plot
+plot_df <- ds_events %>%
   group_by(rel_day, period) %>%
-  summarize(
+  summarise(
     avg_spread = mean(spread_winsorized, na.rm = TRUE),
     n = sum(!is.na(spread_winsorized)),
     .groups = "drop"
   )
 
-p <- ggplot(plot_df, aes(x = rel_day, y = avg_spread,
-                         color = period, linetype = period)) +
+ggplot(plot_df, aes(rel_day, avg_spread, color = period, linetype = period)) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dotted") +
   geom_line(linewidth = 1) +
   geom_point() +
-  geom_vline(xintercept = 0, linetype = "dashed") +
-  scale_x_continuous(breaks = seq(window_min, window_max, by = 1),
+  scale_x_continuous(breaks = seq(window_min, window_max, 1),
                      limits = c(window_min, window_max)) +
   labs(
-    title = "Average Winsorized Spread Around Event (Pre vs Post)",
-    x = "Relative day to event (rel_day)",
-    y = "Average spread_winsorized",
-    color = "Period", linetype = "Period"
+    title = "Average Winsorized Spread Around CAR(5) Incidents",
+    subtitle = "Pre- vs post-adoption (period determined at event day)",
+    x = "Relative day to incident (0 = event day)",
+    y = "Average spread (winsorized)",
+    color = "Incident period", linetype = "Incident period"
   ) +
-  theme_minimal(base_size = 13)
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "top")
+
+
 
 ggplot2::ggsave(
-  filename = "Plots/spread_plot_post.pdf",
+  filename = "Plots/spread_plot_car5_pre_post.pdf",
   plot     = p,
-  device   = grDevices::cairo_pdf,  # or device = "pdf"
+  device   = grDevices::cairo_pdf,
   width    = 8, height = 5, units = "in"
 )
 
@@ -116,40 +112,67 @@ ggplot2::ggsave(
 #---------------- Run Regression (Spread ~ Post + Event ) -------------------
 
 est_11 <- feols(
-  spread ~ post_provisional_standard + event + event:post_provisional_standard +
-    roa_abs_p1p99 + earnings_vol_20q + leverage_p1p99
-  | SICS.Codified.Industry + YearQuarter,
-  data = data_spread,
-  vcov = ~ SICS.Codified.Industry + YearQuarter
+  spread_winsorized ~ post_provisional_standard +
+    leverage_p1p99 + roa_abs_p1p99 + mtb_prevq_p1p99 + size_ln_mve_prevq
+  | cusip + YearQuarter,
+  data = data_post2010,
+  vcov = ~ cusip + YearQuarter
 )
 
 est_12 <- feols(
-  spread ~ post_provisional_standard + event + event:post_provisional_standard +
-    roa_abs_p1p99  + earnings_vol_20q + leverage_p1p99 + severity + reach + novelty
-  | SICS.Codified.Industry + YearQuarter,
-  data = data_spread,
-  vcov = ~ SICS.Codified.Industry + YearQuarter
+  spread_winsorized ~ event +
+    leverage_p1p99 + roa_abs_p1p99 + mtb_prevq_p1p99 + size_ln_mve_prevq
+  | cusip + YearQuarter,
+  data = data_post2010,
+  vcov = ~ cusip + YearQuarter
 )
 
 est_13 <- feols(
-  spread ~ post_provisional_standard + event + event:post_provisional_standard +
-    roa_abs_p1p99 + earnings_vol_20q + leverage_p1p99
+  spread_winsorized ~ car_5_material +
+    leverage_p1p99 + roa_abs_p1p99 + mtb_prevq_p1p99 + size_ln_mve_prevq
   | cusip + YearQuarter,
-  data = data_spread,
+  data = data_post2010,
   vcov = ~ cusip + YearQuarter
 )
 
 est_14 <- feols(
-  spread ~ post_provisional_standard + event + event:post_provisional_standard +
-    roa_abs_p1p99 + earnings_vol_20q + leverage_p1p99 + severity + reach + novelty
+  spread_winsorized ~ post_provisional_standard + event + post_provisional_standard:event +
+    leverage_p1p99 + roa_abs_p1p99 + mtb_prevq_p1p99 + size_ln_mve_prevq
   | cusip + YearQuarter,
-  data = data_spread,
+  data = data_post2010,
+  vcov = ~ cusip + YearQuarter
+)
+
+est_15 <- feols(
+  spread_winsorized ~ car_5_material + event + car_5_material:event +
+    leverage_p1p99 + roa_abs_p1p99 + mtb_prevq_p1p99 + size_ln_mve_prevq
+  | cusip + YearQuarter,
+  data = data_post2010,
+  vcov = ~ cusip + YearQuarter
+)
+
+est_16 <- feols(
+  spread_winsorized ~ car_5_material + post_provisional_standard + car_5_material:post_provisional_standard +
+    leverage_p1p99 + roa_abs_p1p99 + mtb_prevq_p1p99 + size_ln_mve_prevq
+  | cusip + YearQuarter,
+  data = data_post2010,
+  vcov = ~ cusip + YearQuarter
+)
+
+est_17 <- feols(
+  spread_winsorized ~ car_5_material + post_provisional_standard + event +
+  car_5_material:post_provisional_standard + event:post_provisional_standard + event:car_5_material +
+    car_5_material:post_provisional_standard:event +
+    leverage_p1p99 + roa_abs_p1p99 + mtb_prevq_p1p99 + size_ln_mve_prevq
+  | cusip + YearQuarter,
+  data = data_post2010,
   vcov = ~ cusip + YearQuarter
 )
 
 
 
-etable(est_11, est_12, est_13, est_14, fixef_sizes = TRUE, coefstat = 'tstat')
+
+etable(est_11, est_12, est_13, est_14, est_15, est_16, est_17, fixef_sizes = TRUE, coefstat = 'tstat')
 
 
 

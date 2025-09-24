@@ -7,39 +7,41 @@ library(staggered)
 
 
 #---------------- Load data -------------------
-# Load data (all)
-data_daily <- read.csv("E:/GermanBusinessPanelTeam/Schrader/Forschung/ESGmateriality/Data/panel_jmp_day.csv")
-
-data_daily = data_daily %>% dplyr::select(cusip, incident_date, YearQuarter, material_flag , severity, reach, novelty, SICS.Codified.Industry, 
-                                          post_provisional_standard, car_den, jump, std_1.2, std_1, std_2, roa_abs_p1p99, NonMaterial_manual_earnings_overall_share,
-                                          Material_manual_earnings_overall_share, overall_manual_Material_words,
-                                          earnings_over_assets_w, earnings_vol_20q, leverage_p1p99, car_den,
-                                          jump, std_1.2, std_1, std_2)
-
-data_daily <- data_daily %>% drop_na()
-
-data_daily <- data_daily %>%
-  mutate(
-    cusip = as.factor(cusip),
-    YearQuarter = as.factor(YearQuarter)
-  )
 
 data_daily <- read.csv("E:/GermanBusinessPanelTeam/Schrader/Forschung/ESGmateriality/Data/panel_jmp_day.csv")
 
-# Select main regression variables to make working with data more manageable
-data_daily = data_daily %>% dplyr::select(cusip, incident_date, YearQuarter, material_flag , severity, reach, novelty, SICS.Codified.Industry, 
-                                  post_provisional_standard, car_den, jump, std_1.2, std_1, std_2, roa_abs_p1p99, NonMaterial_manual_earnings_overall_share,
-                                  Material_manual_earnings_overall_share, overall_manual_Material_sentences,
-                                  earnings_over_assets_w, earnings_vol_20q, leverage_p1p99, car_den,
-                                  jump, std_1.2, std_1, std_2)
+data_daily <- data_daily %>% dplyr::select(cusip, incident_date, YearQuarter, SICS.Codified.Industry, overall_material_disclosure = overall_manual_Material_words,
+                                                quarters_from_adoption, post_provisional_standard, Material_manual_earnings_overall_share, 
+                                                leverage_p1p99, roa_abs_p1p99, mtb_prevq_p1p99, size_ln_mve_prevq,
+                                                car_1_material, car_5_material, reach_material, car_den, jump, std_1.2, std_1, std_2
+)
 
-data_daily <- data_daily %>% drop_na()
+wins <- function(x, p = 0.01) {
+  qs <- stats::quantile(x, c(p, 1 - p), na.rm = TRUE, names = FALSE)
+  pmin(pmax(x, qs[1]), qs[2])
+}
 
+# Use the new name in winsorization + factors
 data_daily <- data_daily %>%
-  mutate(
-    cusip = as.factor(cusip),
-    YearQuarter = as.factor(YearQuarter)
+  dplyr::mutate(
+    overall_material_disclosure            = wins(overall_material_disclosure, 0.01),
+    Material_manual_earnings_overall_share = wins(Material_manual_earnings_overall_share, 0.01),
+    cusip      = as.factor(cusip),
+    YearQuarter= as.factor(YearQuarter),
+    Industry   = as.factor(SICS.Codified.Industry)
+  ) %>%
+  # add log1p versions (consistent naming)
+  dplyr::mutate(
+    overall_material_disclosure_log1p            = log1p(overall_material_disclosure)
   )
+
+data_post2010 <- data_daily %>%
+  dplyr::mutate(
+    .year_tmp = suppressWarnings(as.integer(substr(as.character(YearQuarter), 1, 4)))
+  ) %>%
+  dplyr::filter(.year_tmp > 2009) %>%
+  dplyr::select(-.year_tmp) %>%
+  droplevels()
 
 # Filter for denominator values smaller than the cutoff
 
@@ -47,120 +49,26 @@ data_std12_daily <- data_daily %>% filter(abs(car_den) >= `std_1.2`)
 data_std1_daily  <- data_daily %>% filter(abs(car_den) >= std_1)
 data_std2_daily  <- data_daily %>% filter(abs(car_den) >= std_2)
 
-  #---------------- Run Regression (JMP ~ Post ) -------------------
-  
-  est_11 <- feols(
-    jump ~ post_provisional_standard + material_flag + material_flag:post_provisional_standard +
-      roa_abs_p1p99 + earnings_vol_20q + leverage_p1p99
-    | SICS.Codified.Industry + YearQuarter,
-    data = data_std12_daily,
-    vcov = ~ SICS.Codified.Industry + YearQuarter
-  )
-  
-  est_12 <- feols(
-    jump ~ post_provisional_standard + material_flag + material_flag:post_provisional_standard +
-      roa_abs_p1p99  + earnings_vol_20q + leverage_p1p99 + severity + reach + novelty
-    | SICS.Codified.Industry + YearQuarter,
-    data = data_std12_daily,
-    vcov = ~ SICS.Codified.Industry + YearQuarter
-  )
-  
-  est_13 <- feols(
-    jump ~ post_provisional_standard + material_flag + material_flag:post_provisional_standard +
-      roa_abs_p1p99 + earnings_vol_20q + leverage_p1p99
-    | cusip + YearQuarter,
-    data = data_std12_daily,
-    vcov = ~ cusip + YearQuarter
-  )
-  
-  est_14 <- feols(
-    jump ~ post_provisional_standard + material_flag + material_flag:post_provisional_standard +
-      roa_abs_p1p99 + earnings_vol_20q + leverage_p1p99 + severity + reach + novelty
-    | cusip + YearQuarter,
-    data = data_std12_daily,
-    vcov = ~ cusip + YearQuarter
-  )
-  
-  
-  
-  etable(est_11, est_12, est_13, est_14, fixef_sizes = TRUE, coefstat = 'tstat')
-
-#---------------- Run Regression (JMP ~ Disclosure ) -------------------
-
-
-est_21 <- feols(
-  jump ~ Material_manual_earnings_overall_share + material_flag + material_flag:Material_manual_earnings_overall_share +
-    roa_abs_p1p99 + earnings_vol_20q + leverage_p1p99
-  | SICS.Codified.Industry + YearQuarter,
-  data = data_std12_daily,
-  vcov = ~ SICS.Codified.Industry + YearQuarter
-)
-
-est_22 <- feols(
-  jump ~ Material_manual_earnings_overall_share + material_flag + material_flag:Material_manual_earnings_overall_share +
-    roa_abs_p1p99+ earnings_vol_20q + leverage_p1p99  + severity + reach + novelty
-  | SICS.Codified.Industry + YearQuarter,
-  data = data_std12_daily,
-  vcov = ~ SICS.Codified.Industry + YearQuarter
-)
-
-est_23 <- feols(
-  jump ~ Material_manual_earnings_overall_share + material_flag + material_flag:Material_manual_earnings_overall_share +
-    roa_abs_p1p99+ earnings_vol_20q + leverage_p1p99 
+  #---------------- Run Regression (JMP ~ Reach ) -------------------
+est_11 <- feols(
+  jump ~ reach_material +
+    roa_abs_p1p99 + leverage_p1p99 + mtb_prevq_p1p99 + size_ln_mve_prevq
   | cusip + YearQuarter,
   data = data_std12_daily,
   vcov = ~ cusip + YearQuarter
 )
 
-est_24 <- feols(
-  jump ~ Material_manual_earnings_overall_share + material_flag + material_flag:Material_manual_earnings_overall_share +
-    roa_abs_p1p99 + earnings_vol_20q + leverage_p1p99  + severity + reach + novelty
+est_12 <- feols(
+  jump ~ post_provisional_standard +
+    roa_abs_p1p99 + leverage_p1p99 + mtb_prevq_p1p99 + size_ln_mve_prevq
   | cusip + YearQuarter,
   data = data_std12_daily,
   vcov = ~ cusip + YearQuarter
 )
 
-
-etable(est_21, est_22, est_23, est_24, fixef_sizes = TRUE, coefstat = 'tstat')
-
-#---------------- Run Regression (JMP ~ Disclosure * Post ) -------------------
-
-est_31 <- feols(
-  jump ~ Material_manual_earnings_overall_share + material_flag + post_provisional_standard +
-    post_provisional_standard:material_flag +  post_provisional_standard:Material_manual_earnings_overall_share + 
-    material_flag:Material_manual_earnings_overall_share + material_flag:Material_manual_earnings_overall_share:post_provisional_standard +
-    roa_abs_p1p99 + earnings_vol_20q + leverage_p1p99
-  | SICS.Codified.Industry + YearQuarter,
-  data = data_std12_daily,
-  vcov = ~ SICS.Codified.Industry + YearQuarter
-)
-
-est_32 <- feols(
-  jump ~ Material_manual_earnings_overall_share + material_flag + post_provisional_standard +
-    post_provisional_standard:material_flag +  post_provisional_standard:Material_manual_earnings_overall_share + 
-    material_flag:Material_manual_earnings_overall_share + material_flag:Material_manual_earnings_overall_share:post_provisional_standard +
-    roa_abs_p1p99 + earnings_vol_20q + leverage_p1p99 + severity + reach + novelty
-  | SICS.Codified.Industry + YearQuarter,
-  data = data_std12_daily,
-  vcov = ~ SICS.Codified.Industry + YearQuarter
-)
-
-
-est_33 <- feols(
-  jump ~ Material_manual_earnings_overall_share + material_flag + post_provisional_standard +
-    post_provisional_standard:material_flag +  post_provisional_standard:Material_manual_earnings_overall_share + 
-    material_flag:Material_manual_earnings_overall_share + material_flag:Material_manual_earnings_overall_share:post_provisional_standard +
-    roa_abs_p1p99 + earnings_vol_20q + leverage_p1p99
-  | cusip + YearQuarter,
-  data = data_std12_daily,
-  vcov = ~ cusip + YearQuarter
-)
-
-est_34 <- feols(
-  jump ~ Material_manual_earnings_overall_share + material_flag + post_provisional_standard +
-    post_provisional_standard:material_flag +  post_provisional_standard:Material_manual_earnings_overall_share + 
-    material_flag:Material_manual_earnings_overall_share + material_flag:Material_manual_earnings_overall_share:post_provisional_standard +
-    roa_abs_p1p99+ earnings_vol_20q + leverage_p1p99 + severity + reach + novelty
+est_13 <- feols(
+  jump ~ reach_material + post_provisional_standard + reach_material:post_provisional_standard +
+    roa_abs_p1p99 + leverage_p1p99 + mtb_prevq_p1p99 + size_ln_mve_prevq
   | cusip + YearQuarter,
   data = data_std12_daily,
   vcov = ~ cusip + YearQuarter
@@ -168,88 +76,108 @@ est_34 <- feols(
 
 
 
-etable(est_31, est_32, est_33, est_34, fixef_sizes = TRUE, coefstat = 'tstat')
-
-# --- Fit models  -------------------------------------------------------
-est_14 <- feols(
-  jump ~ material_flag + post_provisional_standard  + material_flag:post_provisional_standard +
-    roa_abs_p1p99 + earnings_vol_20q + leverage_p1p99 + severity + reach + novelty
-  | cusip + YearQuarter,
-  data = data_std12_daily,
-  vcov = ~ cusip + YearQuarter
-)
-
-est_24 <- feols(
-  jump ~ material_flag + Material_manual_earnings_overall_share + material_flag:Material_manual_earnings_overall_share +
-    roa_abs_p1p99 + earnings_vol_20q + leverage_p1p99  + severity + reach + novelty
-  | cusip + YearQuarter,
-  data = data_std12_daily,
-  vcov = ~ cusip + YearQuarter
-)
-
-est_34 <- feols(
-  jump ~ material_flag + post_provisional_standard + Material_manual_earnings_overall_share +
-    material_flag:post_provisional_standard + material_flag:Material_manual_earnings_overall_share +
-    post_provisional_standard:Material_manual_earnings_overall_share + 
-    material_flag:Material_manual_earnings_overall_share:post_provisional_standard +
-    roa_abs_p1p99 + earnings_vol_20q + leverage_p1p99 + severity + reach + novelty
-  | cusip + YearQuarter,
-  data = data_std12_daily,
-  vcov = ~ cusip + YearQuarter
-)
-
-etable(est_14, est_24, est_34, fixef_sizes = TRUE, coefstat = 'tstat')
-
+etable(est_11, est_12, est_13, fixef_sizes = TRUE, coefstat = 'tstat')
 
 # --- exact order on ORIGINAL names (prefix with % so dict doesn't interfere) ---
 ord <- c(
-  "^material_flag$",
+  "^reach_material$",
   "^post_provisional_standard$",
-  "^Material_manual_earnings_overall_share$",
-  "^material_flag:post_provisional_standard$",
-  "^material_flag:Material_manual_earnings_overall_share$",
-  "^post_provisional_standard:Material_manual_earnings_overall_share$",
-  "^material_flag:Material_manual_earnings_overall_share:post_provisional_standard$",
-  "^severity$",
-  "^reach$",
-  "^novelty$",
-  "^roa_abs_p1p99$",
-  "^earnings_vol_20q$",
-  "^leverage_p1p99$"
+  "^reach_material:post_provisional_standard$"
 )
+
 order_vec <- paste0("%", ord)
 keep_vec  <- order_vec
 
 # --- pretty labels (your dict) ---
 dict <- c(
   post_provisional_standard                                          = "Post",
-  material_flag                                                      = "Material incident",
-  Material_manual_earnings_overall_share                             = "Material disclosure",
-  `material_flag:post_provisional_standard`                          = "Post × Material incident",
-  `material_flag:Material_manual_earnings_overall_share`             = "Material incident × Material disclosure",
-  `Material_manual_earnings_overall_share:post_provisional_standard` = "Material disclosure × Post",
-  `material_flag:Material_manual_earnings_overall_share:post_provisional_standard`
-  = "Material disclosure × Material incident × Post",
-  roa_abs_p1p99                                                      = "ROA",
-  earnings_vol_20q                                                   = "Earnings vol",
-  leverage_p1p99                                                     = "Leverage",
-  severity                                                           = "Severity",
-  reach                                                              = "Reach",
-  novelty                                                            = "Novelty",
+  reach_material                                                      = "High Reach Incident",
+  `reach_material:post_provisional_standard`                          = "Post × Material Incident",
   "cusip"       = "Firm",
   "YearQuarter" = "Year–Quarter"
 )
 
 # --- etable to LaTeX with named columns, replace & float control ---
 etable(
-  `(1) Post spec`        = est_14,
-  `(2) Disclosure spec`  = est_24,
-  `(3) Full spec`        = est_34,
-  file        = "./results/sasb_jump_sentences.tex",
+  `(1) Post spec`        = est_11,
+  `(2) Disclosure spec`  = est_12,
+  `(3) Full spec`        = est_13,
+  file        = "./results/jump_reach.tex",
   replace = TRUE, dict=dict, digits = "r3", digits.stats = "r3",
   float=FALSE, coefstat= "tstat", fitstat = ~ r2 + n,
   keep        = keep_vec,
   order       = order_vec,
+  extralines = list("Controls" = rep("Yes", 3)),
+  style.tex = style.tex("aer",
+                        yesNo = c('Yes', 'No'),
+                        fixef.title = "\\midrule",
+                        fixef.where = 'var',
+                        fixef.suffix       = " FE",
+                        stats.title = "\\midrule",
+                        tabular = "*"))
+
+
+
+# --- Fit models  -------------------------------------------------------
+est_11 <- feols(
+  jump ~ car_5_material +
+    roa_abs_p1p99 + leverage_p1p99 + mtb_prevq_p1p99 + size_ln_mve_prevq
+  | cusip + YearQuarter,
+  data = data_std12_daily,
+  vcov = ~ cusip + YearQuarter
+)
+
+est_12 <- feols(
+  jump ~ post_provisional_standard +
+    roa_abs_p1p99 + leverage_p1p99 + mtb_prevq_p1p99 + size_ln_mve_prevq
+  | cusip + YearQuarter,
+  data = data_std12_daily,
+  vcov = ~ cusip + YearQuarter
+)
+
+est_13 <- feols(
+  jump ~ car_5_material + post_provisional_standard + car_5_material:post_provisional_standard +
+    roa_abs_p1p99 + leverage_p1p99 + mtb_prevq_p1p99 + size_ln_mve_prevq
+  | cusip + YearQuarter,
+  data = data_std12_daily,
+  vcov = ~ cusip + YearQuarter
+)
+
+
+
+etable(est_11, est_12, est_13, fixef_sizes = TRUE, coefstat = 'tstat')
+
+
+# --- exact order on ORIGINAL names (prefix with % so dict doesn't interfere) ---
+ord <- c(
+  "^car_5_material$",
+  "^post_provisional_standard$",
+  "^car_5_material:post_provisional_standard$"
+)
+
+order_vec <- paste0("%", ord)
+keep_vec  <- order_vec
+
+# --- pretty labels (your dict) ---
+dict <- c(
+  post_provisional_standard                                          = "Post",
+  car_5_material                                                      = "Low CAR incident",
+  `car_5_material:post_provisional_standard`                          = "Post × Material Incident",
+  "cusip"       = "Firm",
+  "YearQuarter" = "Year–Quarter"
+)
+
+# --- etable to LaTeX with named columns, replace & float control ---
+etable(
+  `(1) Post spec`        = est_11,
+  `(2) Disclosure spec`  = est_12,
+  `(3) Full spec`        = est_13,
+  file        = "./results/jump_car.tex",
+  replace = TRUE, dict=dict, digits = "r3", digits.stats = "r3",
+  float=FALSE, coefstat= "tstat", fitstat = ~ r2 + n,
+  keep        = keep_vec,
+  order       = order_vec,
+  extralines = list("Controls" = rep("Yes", 3)),
   style.tex = style.tex("aer",
                         yesNo = c('Yes', 'No'),
                         fixef.title = "\\midrule",
